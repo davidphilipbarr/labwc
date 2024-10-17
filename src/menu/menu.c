@@ -153,7 +153,7 @@ menu_update_width(struct menu *menu)
 	menu->size.height);
 	wlr_scene_node_set_position(&menu->background->node,
 	theme->menu_border_width,
-	theme->menu_border_width)};
+	theme->menu_border_width);
 	/* Update items_tree position */
     	wlr_scene_node_set_position(&menu->items_tree->node,
     	theme->menu_border_width,
@@ -349,12 +349,7 @@ separator_create(struct menu *menu, const char *label)
 		: LAB_MENU_TITLE;
 	struct server *server = menu->server;
 	struct theme *theme = server->theme;
-        /* Menu item root node */
-        menuitem->tree = wlr_scene_tree_create(menu->items_tree);
-        node_descriptor_create(&menuitem->tree->node,
-        LAB_NODE_DESC_MENUITEM, menuitem);
-
-
+    
 	if (menuitem->type == LAB_MENU_TITLE) {
 		menuitem->height = theme->menu_item_height;
 		menuitem->native_width = font_width(&rc.font_menuheader, label);
