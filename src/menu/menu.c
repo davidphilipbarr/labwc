@@ -1396,7 +1396,7 @@ submenu_timer_handler(void *data)
 		item->submenu->parent = item->parent;
 		/* And open the new submenu tree */
 		struct wlr_box anchor_rect =
-			get_item_anchor_rect(item->submenu->server->theme, item);
+			get_item_anchor_rect(rc.theme, item);
 		if (item->submenu->execute && !item->submenu->scene_tree) {
 			open_pipemenu_async(item->submenu, anchor_rect);
 		} else {
@@ -1452,7 +1452,7 @@ menu_process_item_selection(struct menuitem *item)
 				item->parent->selection.menu = NULL;
 			} else if (!old_submenu->submenu_hide_timer) {
 				old_submenu->submenu_hide_timer = wl_event_loop_add_timer(
-					old_submenu->server->wl_event_loop,
+					server.wl_event_loop,
 					submenu_hide_timer_handler, old_submenu);
 				wl_event_source_timer_update(old_submenu->submenu_hide_timer,
 					rc.menu_submenu_hide_delay);
@@ -1672,12 +1672,12 @@ menu_process_cursor_motion(struct wlr_scene_node *node)
 }
 
 void
-menu_item_unhover(struct server *server)
+menu_item_unhover(struct server *_server)
 {
 	struct menu *menu = NULL;
 	if (selected_item) {
 		menu = selected_item->parent;
-	} else if (server->menu_current) {
+	} else if (_server->menu_current) {
 		menu = get_selection_leaf();
 	}
 
