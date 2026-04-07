@@ -661,6 +661,9 @@ theme_builtin(struct theme *theme)
 	/* magnifier */
 	parse_hexstr("#ff0000", theme->mag_border_color);
 	theme->mag_border_width = 1;
+
+	theme->menu_arrow = NULL;
+	theme->menu_arrow_selected = NULL;
 }
 
 static int
@@ -1846,6 +1849,30 @@ theme_init(struct theme *theme, const char *theme_name)
 	create_corners(theme);
 	load_buttons(theme);
 	create_shadows(theme);
+
+	char filename[4096];
+	enum lab_img_type type = LAB_IMG_PNG;
+	get_button_filename(filename, sizeof(filename), "menu_arrow", ".svg");
+	if (filename[0] != '\0') {
+		type = LAB_IMG_SVG;
+	} else {
+		get_button_filename(filename, sizeof(filename), "menu_arrow", ".png");
+		if (filename[0] != '\0') {
+			type = LAB_IMG_PNG;
+		} else {
+			get_button_filename(filename, sizeof(filename), "menu_arrow", ".xbm");
+			if (filename[0] != '\0') {
+				type = LAB_IMG_XBM;
+			}
+		}
+	}
+
+	if (filename[0] != '\0') {
+		theme->menu_arrow = lab_img_load(type, filename,
+			theme->menu_items_text_color);
+		theme->menu_arrow_selected = lab_img_load(type, filename,
+			theme->menu_items_active_text_color);
+	}
 }
 
 static void destroy_img(struct lab_img **img)
@@ -1878,4 +1905,7 @@ theme_finish(struct theme *theme)
 		zdrop(&theme->window[active].shadow_corner_bottom);
 		zdrop(&theme->window[active].shadow_edge);
 	}
+
+	destroy_img(&theme->menu_arrow);
+	destroy_img(&theme->menu_arrow_selected);
 }

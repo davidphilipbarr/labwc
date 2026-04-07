@@ -1,0 +1,117 @@
+diff --git a/include/config/rcxml.h b/include/config/rcxml.h
+index 107dcc2..926d57b 100644
+--- a/include/config/rcxml.h
++++ b/include/config/rcxml.h
+@@ -203,6 +203,7 @@ struct rcxml {
+ /* Menu */
+ unsigned int menu_ignore_button_release_period;
+ unsigned int menu_submenu_show_delay;
++unsigned int menu_submenu_hide_delay;
+ bool menu_show_icons;
+ 
+ /* Magnifier */
+diff --git a/include/menu/menu.h b/include/menu/menu.h
+index abd9e19..f4a1cc6 100644
+--- a/include/menu/menu.h
++++ b/include/menu/menu.h
+@@ -64,6 +64,7 @@ struct menu {
+ struct wl_list link; /* server.menus */
+ 
+ struct wl_event_source *submenu_timer;
++struct wl_event_source *submenu_hide_timer;
+ struct menuitem *submenu_item_to_open;
+ };
+ 
+diff --git a/src/config/rcxml.c b/src/config/rcxml.c
+index 2e13abd..100adfa 100644
+--- a/src/config/rcxml.c
++++ b/src/config/rcxml.c
+@@ -1362,6 +1362,9 @@ fill_menu_settings(xmlNode *node, const char *nodename, const char *content)
+ } else if (!strcasecmp(nodename, "submenuShowDelay.menu") ||
+ odename, "submenuShowDelay")) {
+ u_submenu_show_delay = atoi(content);
++} else if (!strcasecmp(nodename, "submenuHideDelay.menu") ||
++!strcasecmp(nodename, "submenuHideDelay")) {
++rc.menu_submenu_hide_delay = atoi(content);
+ } else if (!strcasecmp(nodename, "width.magnifier")) {
+ atoi(content);
+ } else if (!strcasecmp(nodename, "height.magnifier")) {
+@@ -1517,6 +1520,7 @@ rcxml_read(const char *filename)
+ rc.menu_ignore_button_release_period = 250;
+ rc.menu_show_icons = true;
+ rc.menu_submenu_show_delay = 100;
++rc.menu_submenu_hide_delay = 400;
+ 
+ rc.mag_width = 400;
+ rc.mag_height = 400;
+diff --git a/src/menu/menu.c b/src/menu/menu.c
+index b00dc5b..468d6e3 100644
+--- a/src/menu/menu.c
++++ b/src/menu/menu.c
+@@ -1032,6 +1032,9 @@ menu_free(struct menu *menu)
+ if (menu->submenu_timer) {
+ t_source_remove(menu->submenu_timer);
+ }
++if (menu->submenu_hide_timer) {
++wl_event_source_remove(menu->submenu_hide_timer);
++}
+ /*
+  * Destroying the root node will destroy everything,
+  * including node descriptors and scaled_font_buffers.
+@@ -1138,6 +1141,10 @@ static void
+ _close(struct menu *menu)
+ {
+ if (menu->submenu_timer) {
+ t_source_remove(menu->submenu_timer);
+ u->submenu_timer = NULL;
+ }
++if (menu->submenu_hide_timer) {
++wl_event_source_remove(menu->submenu_hide_timer);
++menu->submenu_hide_timer = NULL;
++}
+ if (menu->scene_tree) {
+ e_node_set_enabled(&menu->scene_tree->node, false);
+ }
+@@ -1331,6 +1338,14 @@ open_pipemenu_async(struct menu *pipemenu, struct wlr_box anchor_rect)
+ }
+ 
+ static int
++submenu_hide_timer_handler(void *data)
++{
++struct menu *menu = data;
++menu_close(menu);
++return 0;
++}
++
++static int
+ submenu_timer_handler(void *data)
+ {
+ struct menu *menu = data;
+@@ -1383,8 +1398,25 @@ menu_process_item_selection(struct menuitem *item)
+ item->parent->submenu_item_to_open = NULL;
+ 
+ if (item->parent->selection.menu) {
+-/* Close old submenu tree */
+-menu_close(item->parent->selection.menu);
++struct menu *old_submenu = item->parent->selection.menu;
++if (old_submenu == item->submenu) {
++if (old_submenu->submenu_hide_timer) {
++wl_event_source_remove(old_submenu->submenu_hide_timer);
++old_submenu->submenu_hide_timer = NULL;
++}
++} else {
++if (rc.menu_submenu_hide_delay == 0) {
++menu_close(old_submenu);
++} else {
++if (!old_submenu->submenu_hide_timer) {
++old_submenu->submenu_hide_timer = wl_event_loop_add_timer(
++old_submenu->server->wl_event_loop,
++submenu_hide_timer_handler, old_submenu);
++wl_event_source_timer_update(old_submenu->submenu_hide_timer,
++rc.menu_submenu_hide_delay);
++}
++}
++}
+ }
+ 
+ if (item->submenu) {

@@ -61,6 +61,10 @@ struct menu {
 	/* Used to match a window-menu to the view that triggered it. */
 	struct view *triggered_by_view;  /* may be NULL */
 	struct wl_list link; /* server.menus */
+
+	struct wl_event_source *submenu_timer;
+	struct wl_event_source *submenu_hide_timer;
+	struct menuitem *submenu_item_to_open;
 };
 
 /* For keyboard support */
@@ -98,6 +102,14 @@ void menu_open_root(struct menu *menu, int x, int y);
  * - may open/close submenus
  */
 void menu_process_cursor_motion(struct wlr_scene_node *node);
+
+/**
+ * menu_item_unhover
+ *
+ * - cancels pending submenu show timers
+ * - clears selection highlight
+ */
+void menu_item_unhover(struct server *server);
 
 /**
  *  menu_close_root- close root menu

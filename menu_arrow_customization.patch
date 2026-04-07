@@ -1,0 +1,468 @@
+diff --git a/include/config/rcxml.h b/include/config/rcxml.h
+index a6f1a7d7..72ca3238 100644
+--- a/include/config/rcxml.h
++++ b/include/config/rcxml.h
+@@ -201,6 +201,8 @@ struct rcxml {
+ 
+ 	/* Menu */
+ 	unsigned int menu_ignore_button_release_period;
++	unsigned int menu_submenu_show_delay;
++	unsigned int menu_submenu_hide_delay;
+ 	bool menu_show_icons;
+ 
+ 	/* Magnifier */
+diff --git a/include/menu/menu.h b/include/menu/menu.h
+index f65ff9a3..889c5398 100644
+--- a/include/menu/menu.h
++++ b/include/menu/menu.h
+@@ -62,6 +62,10 @@ struct menu {
+ 	/* Used to match a window-menu to the view that triggered it. */
+ 	struct view *triggered_by_view;  /* may be NULL */
+ 	struct wl_list link; /* server.menus */
++
++	struct wl_event_source *submenu_timer;
++	struct wl_event_source *submenu_hide_timer;
++	struct menuitem *submenu_item_to_open;
+ };
+ 
+ /* For keyboard support */
+@@ -100,6 +104,14 @@ void menu_open_root(struct menu *menu, int x, int y);
+  */
+ void menu_process_cursor_motion(struct wlr_scene_node *node);
+ 
++/**
++ * menu_item_unhover
++ *
++ * - cancels pending submenu show timers
++ * - clears selection highlight
++ */
++void menu_item_unhover(struct server *server);
++
+ /**
+  *  menu_close_root- close root menu
+  *
+diff --git a/include/theme.h b/include/theme.h
+index beba06cc..2a2b73f7 100644
+--- a/include/theme.h
++++ b/include/theme.h
+@@ -150,6 +150,9 @@ struct theme {
+ 	float menu_items_active_bg_color[4];
+ 	float menu_items_active_text_color[4];
+ 
++	struct lab_img *menu_arrow;
++	struct lab_img *menu_arrow_selected;
++
+ 	int menu_separator_line_thickness;
+ 	int menu_separator_padding_width;
+ 	int menu_separator_padding_height;
+diff --git a/src/config/rcxml.c b/src/config/rcxml.c
+index 45093781..9c7dc33c 100644
+--- a/src/config/rcxml.c
++++ b/src/config/rcxml.c
+@@ -1359,6 +1359,12 @@ entry(xmlNode *node, char *nodename, char *content)
+ 		rc.menu_ignore_button_release_period = atoi(content);
+ 	} else if (!strcasecmp(nodename, "showIcons.menu")) {
+ 		set_bool(content, &rc.menu_show_icons);
++	} else if (!strcasecmp(nodename, "submenuShowDelay.menu") ||
++			!strcasecmp(nodename, "submenuShowDelay")) {
++		rc.menu_submenu_show_delay = atoi(content);
++	} else if (!strcasecmp(nodename, "submenuHideDelay.menu") ||
++			!strcasecmp(nodename, "submenuHideDelay")) {
++		rc.menu_submenu_hide_delay = atoi(content);
+ 	} else if (!strcasecmp(nodename, "width.magnifier")) {
+ 		rc.mag_width = atoi(content);
+ 	} else if (!strcasecmp(nodename, "height.magnifier")) {
+@@ -1514,6 +1520,8 @@ rcxml_init(void)
+ 
+ 	rc.menu_ignore_button_release_period = 250;
+ 	rc.menu_show_icons = true;
++	rc.menu_submenu_show_delay = 100;
++	rc.menu_submenu_hide_delay = 400;
+ 
+ 	rc.mag_width = 400;
+ 	rc.mag_height = 400;
+diff --git a/src/input/cursor.c b/src/input/cursor.c
+index ababb2cd..1650e7e6 100644
+--- a/src/input/cursor.c
++++ b/src/input/cursor.c
+@@ -639,6 +639,8 @@ cursor_process_motion(struct server *server, uint32_t time, double *sx, double *
+ 		menu_process_cursor_motion(ctx.node);
+ 		cursor_set(&server->seat, LAB_CURSOR_DEFAULT);
+ 		return false;
++	} else if (server->input_mode == LAB_INPUT_STATE_MENU) {
++		menu_item_unhover(server);
+ 	}
+ 
+ 	if (seat->drag.active) {
+diff --git a/src/menu/menu.c b/src/menu/menu.c
+index 45495a57..76e781ec 100644
+--- a/src/menu/menu.c
++++ b/src/menu/menu.c
+@@ -23,11 +23,13 @@
+ #include "common/string-helpers.h"
+ #include "common/xml.h"
+ #include "config/rcxml.h"
++#include "input/cursor.h"
+ #include "labwc.h"
+ #include "node.h"
+ #include "output.h"
+ #include "scaled-buffer/scaled-font-buffer.h"
+ #include "scaled-buffer/scaled-icon-buffer.h"
++#include "scaled-buffer/scaled-img-buffer.h"
+ #include "theme.h"
+ #include "translate.h"
+ #include "view.h"
+@@ -153,8 +155,13 @@ item_create(struct menu *menu, const char *text, const char *icon_name, bool sho
+ 
+ 	menuitem->native_width = font_width(&rc.font_menuitem, text);
+ 	if (menuitem->arrow) {
+-		menuitem->native_width += font_width(&rc.font_menuitem, menuitem->arrow)
+-					+ theme->menu_items_padding_x;
++		if (theme->menu_arrow) {
++			menuitem->native_width += ICON_SIZE
++						+ theme->menu_items_padding_x;
++		} else {
++			menuitem->native_width += font_width(&rc.font_menuitem, menuitem->arrow)
++						+ theme->menu_items_padding_x;
++		}
+ 	}
+ 
+ 	wl_list_append(&menu->menuitems, &menuitem->link);
+@@ -179,8 +186,15 @@ item_create_scene_for_state(struct menuitem *item, float *text_color,
+ 	}
+ 
+ 	int bg_width = menu->size.width - 2 * theme->menu_border_width;
+-	int arrow_width = item->arrow ?
+-		font_width(&rc.font_menuitem, item->arrow) + theme->menu_items_padding_x : 0;
++	int arrow_width = 0;
++	if (item->arrow) {
++		if (theme->menu_arrow) {
++			arrow_width = ICON_SIZE + theme->menu_items_padding_x;
++		} else {
++			arrow_width = font_width(&rc.font_menuitem, item->arrow)
++				+ theme->menu_items_padding_x;
++		}
++	}
+ 	int label_max_width = bg_width - 2 * theme->menu_items_padding_x
+ 		- arrow_width - icon_width;
+ 
+@@ -225,14 +239,27 @@ item_create_scene_for_state(struct menuitem *item, float *text_color,
+ 	}
+ 
+ 	/* Create arrow for submenu items */
+-	struct scaled_font_buffer *arrow_buffer = scaled_font_buffer_create(tree);
+-	assert(arrow_buffer);
+-	scaled_font_buffer_update(arrow_buffer, item->arrow, -1,
+-		&rc.font_menuitem, text_color, bg_color);
+-	/* Vertically center and right-align arrow */
+-	x += label_max_width + theme->menu_items_padding_x;
+-	y = (theme->menu_item_height - label_buffer->height) / 2;
+-	wlr_scene_node_set_position(&arrow_buffer->scene_buffer->node, x, y);
++	int arrow_x = x + label_max_width + theme->menu_items_padding_x;
++	int arrow_y = (theme->menu_item_height - label_buffer->height) / 2;
++
++	struct lab_img *arrow_img = (bg_color == theme->menu_items_active_bg_color)
++		? theme->menu_arrow_selected : theme->menu_arrow;
++
++	if (arrow_img) {
++		struct scaled_img_buffer *img_buffer = scaled_img_buffer_create(
++			tree, arrow_img, icon_size, icon_size);
++		assert(img_buffer);
++		wlr_scene_node_set_position(&img_buffer->scene_buffer->node,
++			arrow_x, theme->menu_items_padding_y);
++	} else {
++		struct scaled_font_buffer *arrow_buffer = scaled_font_buffer_create(tree);
++		assert(arrow_buffer);
++		scaled_font_buffer_update(arrow_buffer, item->arrow, -1,
++			&rc.font_menuitem, text_color, bg_color);
++		/* Vertically center and right-align arrow */
++		wlr_scene_node_set_position(&arrow_buffer->scene_buffer->node,
++			arrow_x, arrow_y);
++	}
+ 
+ 	return tree;
+ }
+@@ -1029,6 +1056,12 @@ menu_free(struct menu *menu)
+ 		assert(!menu->pipe_ctx);
+ 	}
+ 
++	if (menu->submenu_timer) {
++		wl_event_source_remove(menu->submenu_timer);
++	}
++	if (menu->submenu_hide_timer) {
++		wl_event_source_remove(menu->submenu_hide_timer);
++	}
+ 	/*
+ 	 * Destroying the root node will destroy everything,
+ 	 * including node descriptors and scaled_font_buffers.
+@@ -1135,6 +1168,22 @@ reset_pipemenus(struct server *server)
+ static void
+ _close(struct menu *menu)
+ {
++	if (menu->submenu_timer) {
++		wl_event_source_remove(menu->submenu_timer);
++		menu->submenu_timer = NULL;
++	}
++	if (menu->submenu_hide_timer) {
++		wl_event_source_remove(menu->submenu_hide_timer);
++		menu->submenu_hide_timer = NULL;
++	}
++
++	if (selected_item && selected_item->parent == menu) {
++		selected_item = NULL;
++	}
++	if (menu->parent && menu->parent->selection.menu == menu) {
++		menu->parent->selection.menu = NULL;
++	}
++
+ 	if (menu->scene_tree) {
+ 		wlr_scene_node_set_enabled(&menu->scene_tree->node, false);
+ 	}
+@@ -1325,6 +1374,49 @@ open_pipemenu_async(struct menu *pipemenu, struct wlr_box anchor_rect)
+ 		(long)ctx->pid, ctx->pipemenu->execute);
+ }
+ 
++static int
++submenu_hide_timer_handler(void *data)
++{
++	struct menu *menu = data;
++	struct menu *parent = menu->parent;
++
++	menu_close(menu);
++
++	if (parent && !parent->selection.menu) {
++		if (!selected_item || selected_item->parent != parent || !selected_item->selectable) {
++			menu_set_selection(parent, NULL);
++		}
++	}
++	return 0;
++}
++
++static int
++submenu_timer_handler(void *data)
++{
++	struct menu *menu = data;
++	struct menuitem *item = menu->submenu_item_to_open;
++
++	if (item && item->submenu) {
++		/* Sync the triggering view */
++		item->submenu->triggered_by_view = item->parent->triggered_by_view;
++		/* Ensure the submenu has its parent set correctly */
++		item->submenu->parent = item->parent;
++		/* And open the new submenu tree */
++		struct wlr_box anchor_rect =
++			get_item_anchor_rect(item->submenu->server->theme, item);
++		if (item->submenu->execute && !item->submenu->scene_tree) {
++			open_pipemenu_async(item->submenu, anchor_rect);
++		} else {
++			open_menu(item->submenu, anchor_rect);
++		}
++		menu->selection.menu = item->submenu;
++	}
++
++	menu->submenu_item_to_open = NULL;
++	menu->submenu_timer = NULL; /* it will be freed by wl_event_source_remove or loop */
++	return 0;
++}
++
+ static void
+ menu_process_item_selection(struct menuitem *item)
+ {
+@@ -1338,35 +1430,97 @@ menu_process_item_selection(struct menuitem *item)
+ 	if (waiting_for_pipe_menu) {
+ 		return;
+ 	}
++
++	/*
++	 * We are on a new item, so cancel any pending submenu timer
++	 * for this menu.
++	 */
++	if (item->parent->submenu_timer) {
++		wl_event_source_remove(item->parent->submenu_timer);
++		item->parent->submenu_timer = NULL;
++	}
++	item->parent->submenu_item_to_open = NULL;
++
+ 	selected_item = item;
+ 
+ 	if (!item->selectable) {
++		/*
++		 * If we move to a separator/title, we want to clear the
++		 * highlight (unless a submenu is open) and handle hide-delay.
++		 */
++		if (!item->parent->selection.menu) {
++			menu_set_selection(item->parent, NULL);
++		}
++
++		if (item->parent->selection.menu) {
++			struct menu *old_submenu = item->parent->selection.menu;
++			if (rc.menu_submenu_hide_delay == 0) {
++				menu_close(old_submenu);
++				item->parent->selection.menu = NULL;
++			} else if (!old_submenu->submenu_hide_timer) {
++				old_submenu->submenu_hide_timer = wl_event_loop_add_timer(
++					old_submenu->server->wl_event_loop,
++					submenu_hide_timer_handler, old_submenu);
++				wl_event_source_timer_update(old_submenu->submenu_hide_timer,
++					rc.menu_submenu_hide_delay);
++			}
++		}
+ 		return;
+ 	}
+ 
+ 	/* We are on an item that has new focus */
+ 	menu_set_selection(item->parent, item);
++
+ 	if (item->parent->selection.menu) {
+-		/* Close old submenu tree */
+-		menu_close(item->parent->selection.menu);
++		struct menu *old_submenu = item->parent->selection.menu;
++		if (old_submenu == item->submenu) {
++			if (old_submenu->submenu_hide_timer) {
++				wl_event_source_remove(old_submenu->submenu_hide_timer);
++				old_submenu->submenu_hide_timer = NULL;
++			}
++		} else {
++			if (rc.menu_submenu_hide_delay == 0) {
++				menu_close(old_submenu);
++			} else {
++				if (!old_submenu->submenu_hide_timer) {
++					old_submenu->submenu_hide_timer = wl_event_loop_add_timer(
++						old_submenu->server->wl_event_loop,
++						submenu_hide_timer_handler, old_submenu);
++					wl_event_source_timer_update(old_submenu->submenu_hide_timer,
++						rc.menu_submenu_hide_delay);
++				}
++			}
++		}
+ 	}
+ 
+ 	if (item->submenu) {
+-		/* Sync the triggering view */
+-		item->submenu->triggered_by_view = item->parent->triggered_by_view;
+-		/* Ensure the submenu has its parent set correctly */
+-		item->submenu->parent = item->parent;
+-		/* And open the new submenu tree */
+-		struct wlr_box anchor_rect =
+-			get_item_anchor_rect(item->submenu->server->theme, item);
+-		if (item->submenu->execute && !item->submenu->scene_tree) {
+-			open_pipemenu_async(item->submenu, anchor_rect);
++		if (rc.menu_submenu_show_delay == 0) {
++			/* Sync the triggering view */
++			item->submenu->triggered_by_view = item->parent->triggered_by_view;
++			/* Ensure the submenu has its parent set correctly */
++			item->submenu->parent = item->parent;
++			/* And open the new submenu tree */
++			struct wlr_box anchor_rect =
++				get_item_anchor_rect(item->submenu->server->theme, item);
++			if (item->submenu->execute && !item->submenu->scene_tree) {
++				open_pipemenu_async(item->submenu, anchor_rect);
++			} else {
++				open_menu(item->submenu, anchor_rect);
++			}
+ 		} else {
+-			open_menu(item->submenu, anchor_rect);
++			item->parent->submenu_item_to_open = item;
++			item->parent->submenu_timer = wl_event_loop_add_timer(
++				item->parent->server->wl_event_loop,
++				submenu_timer_handler, item->parent);
++			wl_event_source_timer_update(item->parent->submenu_timer,
++				rc.menu_submenu_show_delay);
++		}
++		if (rc.menu_submenu_show_delay == 0) {
++			item->parent->selection.menu = item->submenu;
+ 		}
++	} else {
++		item->parent->selection.menu = NULL;
+ 	}
+-
+-	item->parent->selection.menu = item->submenu;
+ }
+ 
+ /* Get the deepest submenu with active item selection or the root menu itself */
+@@ -1524,6 +1678,32 @@ menu_process_cursor_motion(struct wlr_scene_node *node)
+ 	menu_process_item_selection(item);
+ }
+ 
++void
++menu_item_unhover(struct server *server)
++{
++	struct menu *menu = NULL;
++	if (selected_item) {
++		menu = selected_item->parent;
++	} else if (server->menu_current) {
++		menu = get_selection_leaf(server);
++	}
++
++	while (menu) {
++		if (menu->submenu_timer) {
++			wl_event_source_remove(menu->submenu_timer);
++			menu->submenu_timer = NULL;
++		}
++		menu->submenu_item_to_open = NULL;
++
++		if (!menu->selection.menu) {
++			menu_set_selection(menu, NULL);
++		}
++		menu = menu->parent;
++	}
++
++	selected_item = NULL;
++}
++
+ void
+ menu_close_root(struct server *server)
+ {
+diff --git a/src/theme.c b/src/theme.c
+index eeba3050..aadf4304 100644
+--- a/src/theme.c
++++ b/src/theme.c
+@@ -661,6 +661,9 @@ theme_builtin(struct theme *theme, struct server *server)
+ 	/* magnifier */
+ 	parse_hexstr("#ff0000", theme->mag_border_color);
+ 	theme->mag_border_width = 1;
++
++	theme->menu_arrow = NULL;
++	theme->menu_arrow_selected = NULL;
+ }
+ 
+ static int
+@@ -1846,6 +1849,30 @@ theme_init(struct theme *theme, struct server *server, const char *theme_name)
+ 	create_corners(theme);
+ 	load_buttons(theme);
+ 	create_shadows(theme);
++
++	char filename[4096];
++	enum lab_img_type type = LAB_IMG_PNG;
++	get_button_filename(filename, sizeof(filename), "menu_arrow", ".svg");
++	if (filename[0] != '\0') {
++		type = LAB_IMG_SVG;
++	} else {
++		get_button_filename(filename, sizeof(filename), "menu_arrow", ".png");
++		if (filename[0] != '\0') {
++			type = LAB_IMG_PNG;
++		} else {
++			get_button_filename(filename, sizeof(filename), "menu_arrow", ".xbm");
++			if (filename[0] != '\0') {
++				type = LAB_IMG_XBM;
++			}
++		}
++	}
++
++	if (filename[0] != '\0') {
++		theme->menu_arrow = lab_img_load(type, filename,
++			theme->menu_items_text_color);
++		theme->menu_arrow_selected = lab_img_load(type, filename,
++			theme->menu_items_active_text_color);
++	}
+ }
+ 
+ static void destroy_img(struct lab_img **img)
+@@ -1878,4 +1905,7 @@ theme_finish(struct theme *theme)
+ 		zdrop(&theme->window[active].shadow_corner_bottom);
+ 		zdrop(&theme->window[active].shadow_edge);
+ 	}
++
++	destroy_img(&theme->menu_arrow);
++	destroy_img(&theme->menu_arrow_selected);
+ }
