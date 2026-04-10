@@ -1030,6 +1030,9 @@ menu_free(struct menu *menu)
 	if (menu->submenu_timer) {
 		wl_event_source_remove(menu->submenu_timer);
 	}
+	if (menu->submenu_hide_timer) {
+		wl_event_source_remove(menu->submenu_hide_timer);
+	}
 	/*
 	 * Destroying the root node will destroy everything,
 	 * including node descriptors and scaled_font_buffers.
@@ -1138,6 +1141,18 @@ _close(struct menu *menu)
 		wl_event_source_remove(menu->submenu_timer);
 		menu->submenu_timer = NULL;
 	}
+	if (menu->submenu_hide_timer) {
+		wl_event_source_remove(menu->submenu_hide_timer);
+		menu->submenu_hide_timer = NULL;
+	}
+
+	if (selected_item && selected_item->parent == menu) {
+		selected_item = NULL;
+	}
+	if (menu->parent && menu->parent->selection.menu == menu) {
+		menu->parent->selection.menu = NULL;
+	}
+
 	if (menu->scene_tree) {
 		wlr_scene_node_set_enabled(&menu->scene_tree->node, false);
 	}
@@ -1326,6 +1341,22 @@ open_pipemenu_async(struct menu *pipemenu, struct wlr_box anchor_rect)
 }
 
 static int
+submenu_hide_timer_handler(void *data)
+{
+	struct menu *menu = data;
+	struct menu *parent = menu->parent;
+
+	menu_close(menu);
+
+	if (parent && !parent->selection.menu) {
+		if (!selected_item || selected_item->parent != parent || !selected_item->selectable) {
+			menu_set_selection(parent, NULL);
+		}
+	}
+	return 0;
+}
+
+static int
 submenu_timer_handler(void *data)
 {
 	struct menu *menu = data;
@@ -1365,24 +1396,69 @@ menu_process_item_selection(struct menuitem *item)
 	if (waiting_for_pipe_menu) {
 		return;
 	}
-	selected_item = item;
 
-	if (!item->selectable) {
-		return;
-	}
-
-	/* We are on an item that has new focus */
-	menu_set_selection(item->parent, item);
-
+	/*
+	 * We are on a new item, so cancel any pending submenu timer
+	 * for this menu.
+	 */
 	if (item->parent->submenu_timer) {
 		wl_event_source_remove(item->parent->submenu_timer);
 		item->parent->submenu_timer = NULL;
 	}
 	item->parent->submenu_item_to_open = NULL;
 
+	selected_item = item;
+
+	if (!item->selectable) {
+		/*
+		 * If we move to a separator/title, we want to clear the
+		 * highlight (unless a submenu is open) and handle hide-delay.
+		 */
+		if (!item->parent->selection.menu) {
+			menu_set_selection(item->parent, NULL);
+		}
+
+		if (item->parent->selection.menu) {
+			struct menu *old_submenu = item->parent->selection.menu;
+			if (rc.menu_submenu_hide_delay == 0) {
+				menu_close(old_submenu);
+				item->parent->selection.menu = NULL;
+			} else if (!old_submenu->submenu_hide_timer) {
+				old_submenu->submenu_hide_timer = wl_event_loop_add_timer(
+					server.wl_event_loop,
+					submenu_hide_timer_handler, old_submenu);
+				wl_event_source_timer_update(old_submenu->submenu_hide_timer,
+					rc.menu_submenu_hide_delay);
+			}
+		}
+		return;
+	}
+
+	/* We are on an item that has new focus */
+	menu_set_selection(item->parent, item);
+
+	/* Handle existing submenu (and its hide-timer) */
 	if (item->parent->selection.menu) {
-		/* Close old submenu tree */
-		menu_close(item->parent->selection.menu);
+		struct menu *old_submenu = item->parent->selection.menu;
+		if (old_submenu == item->submenu) {
+			if (old_submenu->submenu_hide_timer) {
+				wl_event_source_remove(old_submenu->submenu_hide_timer);
+				old_submenu->submenu_hide_timer = NULL;
+			}
+		} else {
+			if (rc.menu_submenu_hide_delay == 0) {
+				menu_close(old_submenu);
+				item->parent->selection.menu = NULL;
+			} else {
+				if (!old_submenu->submenu_hide_timer) {
+					old_submenu->submenu_hide_timer = wl_event_loop_add_timer(
+						server.wl_event_loop,
+						submenu_hide_timer_handler, old_submenu);
+					wl_event_source_timer_update(old_submenu->submenu_hide_timer,
+						rc.menu_submenu_hide_delay);
+				}
+			}
+		}
 	}
 
 	if (item->submenu) {
@@ -1566,6 +1642,32 @@ menu_process_cursor_motion(struct wlr_scene_node *node)
 	assert(node && node->data);
 	struct menuitem *item = node_menuitem_from_node(node);
 	menu_process_item_selection(item);
+}
+
+void
+menu_item_unhover(struct server *_server)
+{
+	struct menu *menu = NULL;
+	if (selected_item) {
+		menu = selected_item->parent;
+	} else if (_server->menu_current) {
+		menu = get_selection_leaf();
+	}
+
+	while (menu) {
+		if (menu->submenu_timer) {
+			wl_event_source_remove(menu->submenu_timer);
+			menu->submenu_timer = NULL;
+		}
+		menu->submenu_item_to_open = NULL;
+
+		if (!menu->selection.menu) {
+			menu_set_selection(menu, NULL);
+		}
+		menu = menu->parent;
+	}
+
+	selected_item = NULL;
 }
 
 void

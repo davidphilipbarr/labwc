@@ -643,6 +643,8 @@ cursor_process_motion(uint32_t time, double *sx, double *sy)
 		menu_process_cursor_motion(ctx.node);
 		cursor_set(&server.seat, LAB_CURSOR_DEFAULT);
 		return false;
+	} else if (server.input_mode == LAB_INPUT_STATE_MENU) {
+		menu_item_unhover(&server);
 	}
 
 	if (seat->drag.active) {

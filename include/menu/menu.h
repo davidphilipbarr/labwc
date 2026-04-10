@@ -62,6 +62,7 @@ struct menu {
 	struct view *triggered_by_view;  /* may be NULL */
 	struct wl_list link; /* server.menus */
 
+	struct wl_event_source *submenu_hide_timer;
 	struct wl_event_source *submenu_timer;
 	struct menuitem *submenu_item_to_open;
 };
@@ -101,6 +102,7 @@ void menu_open_root(struct menu *menu, int x, int y);
  * - may open/close submenus
  */
 void menu_process_cursor_motion(struct wlr_scene_node *node);
+void menu_item_unhover(struct server *_server);
 
 /**
  *  menu_close_root- close root menu
