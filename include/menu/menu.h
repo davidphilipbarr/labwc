@@ -61,6 +61,9 @@ struct menu {
 	/* Used to match a window-menu to the view that triggered it. */
 	struct view *triggered_by_view;  /* may be NULL */
 	struct wl_list link; /* server.menus */
+
+	struct wl_event_source *submenu_timer;
+	struct menuitem *submenu_item_to_open;
 };
 
 /* For keyboard support */

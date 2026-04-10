@@ -1365,6 +1365,9 @@ entry(xmlNode *node, char *nodename, char *content)
 		rc.menu_ignore_button_release_period = atoi(content);
 	} else if (!strcasecmp(nodename, "showIcons.menu")) {
 		set_bool(content, &rc.menu_show_icons);
+	} else if (!strcasecmp(nodename, "submenuShowDelay.menu") ||
+			!strcasecmp(nodename, "submenuShowDelay")) {
+		rc.menu_submenu_show_delay = atoi(content);
 	} else if (!strcasecmp(nodename, "width.magnifier")) {
 		rc.mag_width = atoi(content);
 	} else if (!strcasecmp(nodename, "height.magnifier")) {
@@ -1522,6 +1525,7 @@ rcxml_init(void)
 
 	rc.menu_ignore_button_release_period = 250;
 	rc.menu_show_icons = true;
+	rc.menu_submenu_show_delay = 100;
 
 	rc.mag_width = 400;
 	rc.mag_height = 400;

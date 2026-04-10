@@ -203,6 +203,7 @@ struct rcxml {
 
 	/* Menu */
 	unsigned int menu_ignore_button_release_period;
+	unsigned int menu_submenu_show_delay;
 	bool menu_show_icons;
 
 	/* Magnifier */

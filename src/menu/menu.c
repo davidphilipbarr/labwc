@@ -1027,6 +1027,9 @@ menu_free(struct menu *menu)
 		assert(!menu->pipe_ctx);
 	}
 
+	if (menu->submenu_timer) {
+		wl_event_source_remove(menu->submenu_timer);
+	}
 	/*
 	 * Destroying the root node will destroy everything,
 	 * including node descriptors and scaled_font_buffers.
@@ -1131,6 +1134,10 @@ reset_pipemenus(void)
 static void
 _close(struct menu *menu)
 {
+	if (menu->submenu_timer) {
+		wl_event_source_remove(menu->submenu_timer);
+		menu->submenu_timer = NULL;
+	}
 	if (menu->scene_tree) {
 		wlr_scene_node_set_enabled(&menu->scene_tree->node, false);
 	}
@@ -1318,6 +1325,32 @@ open_pipemenu_async(struct menu *pipemenu, struct wlr_box anchor_rect)
 		(long)ctx->pid, ctx->pipemenu->execute);
 }
 
+static int
+submenu_timer_handler(void *data)
+{
+	struct menu *menu = data;
+	struct menuitem *item = menu->submenu_item_to_open;
+
+	if (item && item->submenu) {
+		/* Sync the triggering view */
+		item->submenu->triggered_by_view = item->parent->triggered_by_view;
+		/* Ensure the submenu has its parent set correctly */
+		item->submenu->parent = item->parent;
+		/* And open the new submenu tree */
+		struct wlr_box anchor_rect =
+			get_item_anchor_rect(rc.theme, item);
+		if (item->submenu->execute && !item->submenu->scene_tree) {
+			open_pipemenu_async(item->submenu, anchor_rect);
+		} else {
+			open_menu(item->submenu, anchor_rect);
+		}
+	}
+
+	menu->submenu_item_to_open = NULL;
+	menu->submenu_timer = NULL; /* it will be freed by wl_event_source_remove or loop */
+	return 0;
+}
+
 static void
 menu_process_item_selection(struct menuitem *item)
 {
@@ -1339,23 +1372,39 @@ menu_process_item_selection(struct menuitem *item)
 
 	/* We are on an item that has new focus */
 	menu_set_selection(item->parent, item);
+
+	if (item->parent->submenu_timer) {
+		wl_event_source_remove(item->parent->submenu_timer);
+		item->parent->submenu_timer = NULL;
+	}
+	item->parent->submenu_item_to_open = NULL;
+
 	if (item->parent->selection.menu) {
 		/* Close old submenu tree */
 		menu_close(item->parent->selection.menu);
 	}
 
 	if (item->submenu) {
-		/* Sync the triggering view */
-		item->submenu->triggered_by_view = item->parent->triggered_by_view;
-		/* Ensure the submenu has its parent set correctly */
-		item->submenu->parent = item->parent;
-		/* And open the new submenu tree */
-		struct wlr_box anchor_rect =
-			get_item_anchor_rect(rc.theme, item);
-		if (item->submenu->execute && !item->submenu->scene_tree) {
-			open_pipemenu_async(item->submenu, anchor_rect);
+		if (rc.menu_submenu_show_delay == 0) {
+			/* Sync the triggering view */
+			item->submenu->triggered_by_view = item->parent->triggered_by_view;
+			/* Ensure the submenu has its parent set correctly */
+			item->submenu->parent = item->parent;
+			/* And open the new submenu tree */
+			struct wlr_box anchor_rect =
+				get_item_anchor_rect(rc.theme, item);
+			if (item->submenu->execute && !item->submenu->scene_tree) {
+				open_pipemenu_async(item->submenu, anchor_rect);
+			} else {
+				open_menu(item->submenu, anchor_rect);
+			}
 		} else {
-			open_menu(item->submenu, anchor_rect);
+			item->parent->submenu_item_to_open = item;
+			item->parent->submenu_timer = wl_event_loop_add_timer(
+				server.wl_event_loop,
+				submenu_timer_handler, item->parent);
+			wl_event_source_timer_update(item->parent->submenu_timer,
+				rc.menu_submenu_show_delay);
 		}
 	}
 
