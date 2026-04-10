@@ -1344,6 +1344,7 @@ submenu_timer_handler(void *data)
 		} else {
 			open_menu(item->submenu, anchor_rect);
 		}
+		menu->selection.menu = item->submenu;
 	}
 
 	menu->submenu_item_to_open = NULL;
@@ -1406,9 +1407,12 @@ menu_process_item_selection(struct menuitem *item)
 			wl_event_source_timer_update(item->parent->submenu_timer,
 				rc.menu_submenu_show_delay);
 		}
+		if (rc.menu_submenu_show_delay == 0) {
+			item->parent->selection.menu = item->submenu;
+		}
+	} else {
+		item->parent->selection.menu = NULL;
 	}
-
-	item->parent->selection.menu = item->submenu;
 }
 
 /* Get the deepest submenu with active item selection or the root menu itself */
